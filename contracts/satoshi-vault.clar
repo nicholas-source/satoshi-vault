@@ -300,3 +300,92 @@
     (ok true)
   )
 )
+
+;; STABLECOIN REDEMPTION SYSTEM
+
+;; Redeem SATS tokens to reduce debt and unlock collateral
+(define-public (redeem-stablecoin
+    (vault-owner principal)
+    (vault-id uint)
+    (redeem-amount uint)
+  )
+  (let (
+      ;; Vault ID validation
+      (is-valid-vault-id (and
+        (> vault-id u0)
+        (<= vault-id (var-get vault-counter))
+      ))
+      ;; Retrieve vault for redemption
+      (vault (unwrap!
+        (map-get? vaults {
+          owner: vault-owner,
+          id: vault-id,
+        })
+        ERR-INVALID-PARAMETERS
+      ))
+    )
+    ;; Authorization and validation checks
+    (asserts! is-valid-vault-id ERR-INVALID-PARAMETERS)
+    (asserts! (is-eq tx-sender vault-owner) ERR-UNAUTHORIZED-VAULT-ACTION)
+    (asserts! (> redeem-amount u0) ERR-INVALID-PARAMETERS)
+    (asserts! (<= redeem-amount (get stablecoin-minted vault))
+      ERR-INSUFFICIENT-BALANCE
+    )
+    ;; Update vault debt after redemption
+    (map-set vaults {
+      owner: vault-owner,
+      id: vault-id,
+    } {
+      collateral-amount: (get collateral-amount vault),
+      stablecoin-minted: (- (get stablecoin-minted vault) redeem-amount),
+      created-at: (get created-at vault),
+    })
+    ;; Reduce global stablecoin supply
+    (var-set total-supply (- (var-get total-supply) redeem-amount))
+    (ok true)
+  )
+)
+
+;; GOVERNANCE & PARAMETER MANAGEMENT
+
+;; Update collateralization ratio (governance function)
+(define-public (update-collateralization-ratio (new-ratio uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (asserts!
+      (and
+        (>= new-ratio u100) ;; Minimum 100% collateralization
+        (<= new-ratio u300) ;; Maximum 300% collateralization
+      )
+      ERR-INVALID-PARAMETERS
+    )
+    (var-set collateralization-ratio new-ratio)
+    (ok true)
+  )
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+;; Get current BTC price from oracle
+(define-read-only (get-latest-btc-price)
+  (map-get? last-btc-price {
+    timestamp: stacks-block-height,
+    price: u0,
+  })
+)
+
+;; Retrieve comprehensive vault information
+(define-read-only (get-vault-details
+    (vault-owner principal)
+    (vault-id uint)
+  )
+  (map-get? vaults {
+    owner: vault-owner,
+    id: vault-id,
+  })
+)
+
+;; Get total SATS token supply
+(define-read-only (get-total-supply)
+  (var-get total-supply)
+)
