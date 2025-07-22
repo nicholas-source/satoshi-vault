@@ -192,3 +192,111 @@
     (ok vault-id)
   )
 )
+
+;; STABLECOIN MINTING ENGINE
+
+;; Mint SATS tokens against Bitcoin collateral
+(define-public (mint-stablecoin
+    (vault-owner principal)
+    (vault-id uint)
+    (mint-amount uint)
+  )
+  (let (
+      ;; Vault ID boundary validation
+      (is-valid-vault-id (and
+        (> vault-id u0) ;; Positive vault ID
+        (<= vault-id (var-get vault-counter)) ;; Within existing range
+      ))
+      ;; Retrieve vault configuration
+      (vault (unwrap!
+        (map-get? vaults {
+          owner: vault-owner,
+          id: vault-id,
+        })
+        ERR-INVALID-PARAMETERS
+      ))
+      ;; Fetch current BTC price from oracle
+      (btc-price (unwrap! (get-latest-btc-price) ERR-ORACLE-PRICE-UNAVAILABLE))
+      ;; Calculate maximum mintable amount based on collateralization
+      (max-mintable (/ (* (get collateral-amount vault) btc-price)
+        (var-get collateralization-ratio)
+      ))
+    )
+    ;; Execute validation checks
+    (asserts! is-valid-vault-id ERR-INVALID-PARAMETERS)
+    (asserts! (is-eq tx-sender vault-owner) ERR-UNAUTHORIZED-VAULT-ACTION)
+    (asserts! (> mint-amount u0) ERR-INVALID-PARAMETERS)
+    ;; Verify collateralization requirements
+    (asserts! (>= max-mintable (+ (get stablecoin-minted vault) mint-amount))
+      ERR-UNDERCOLLATERALIZED
+    )
+    ;; Enforce minting limits
+    (asserts!
+      (<= (+ (get stablecoin-minted vault) mint-amount) (var-get max-mint-limit))
+      ERR-MINT-LIMIT-EXCEEDED
+    )
+    ;; Update vault state with new minted amount
+    (map-set vaults {
+      owner: vault-owner,
+      id: vault-id,
+    } {
+      collateral-amount: (get collateral-amount vault),
+      stablecoin-minted: (+ (get stablecoin-minted vault) mint-amount),
+      created-at: (get created-at vault),
+    })
+    ;; Update global supply metrics
+    (var-set total-supply (+ (var-get total-supply) mint-amount))
+    (ok true)
+  )
+)
+
+;; LIQUIDATION ENGINE
+
+;; Automated vault liquidation for undercollateralized positions
+(define-public (liquidate-vault
+    (vault-owner principal)
+    (vault-id uint)
+  )
+  (let (
+      ;; Vault ID validation
+      (is-valid-vault-id (and
+        (> vault-id u0)
+        (<= vault-id (var-get vault-counter))
+      ))
+      ;; Retrieve target vault for liquidation
+      (vault (unwrap!
+        (map-get? vaults {
+          owner: vault-owner,
+          id: vault-id,
+        })
+        ERR-INVALID-PARAMETERS
+      ))
+      ;; Get real-time BTC price
+      (btc-price (unwrap! (get-latest-btc-price) ERR-ORACLE-PRICE-UNAVAILABLE))
+      ;; Calculate current collateralization ratio
+      (current-collateralization (/ (* (get collateral-amount vault) btc-price)
+        (get stablecoin-minted vault)
+      ))
+    )
+    ;; Validation and authorization checks
+    (asserts! is-valid-vault-id ERR-INVALID-PARAMETERS)
+    (asserts! (not (is-eq tx-sender vault-owner)) ERR-UNAUTHORIZED-VAULT-ACTION)
+    ;; Verify liquidation threshold breach
+    (asserts! (< current-collateralization (var-get liquidation-threshold))
+      ERR-LIQUIDATION-FAILED
+    )
+    ;; Execute liquidation process
+    ;; 1. Seize Bitcoin collateral for protocol
+    ;; 2. Burn outstanding stablecoin debt
+    ;; Adjust global supply after liquidation
+    (var-set total-supply
+      (- (var-get total-supply) (get stablecoin-minted vault))
+    )
+    ;; Remove liquidated vault from system
+    (map-delete vaults {
+      owner: vault-owner,
+      id: vault-id,
+    })
+    (ok true)
+  )
+)
