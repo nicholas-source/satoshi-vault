@@ -101,3 +101,94 @@
   }
   uint
 )
+
+;; Vault Storage Structure
+(define-map vaults
+  {
+    owner: principal,
+    id: uint,
+  }
+  {
+    collateral-amount: uint, ;; BTC collateral in satoshis
+    stablecoin-minted: uint, ;; SATS tokens minted against collateral
+    created-at: uint, ;; Block height of vault creation
+  }
+)
+
+;; ORACLE MANAGEMENT FUNCTIONS
+
+;; Add authorized price oracle
+(define-public (add-btc-price-oracle (oracle principal))
+  (begin
+    ;; Verify protocol administrator privileges
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    ;; Prevent circular authorization and owner conflicts
+    (asserts!
+      (and
+        (not (is-eq oracle CONTRACT-OWNER))
+        (not (is-eq oracle tx-sender))
+      )
+      ERR-INVALID-PARAMETERS
+    )
+    ;; Register oracle with authorization
+    (map-set btc-price-oracles oracle true)
+    (ok true)
+  )
+)
+
+;; Update Bitcoin price feed with validation
+(define-public (update-btc-price
+    (price uint)
+    (timestamp uint)
+  )
+  (begin
+    ;; Verify oracle authorization
+    (asserts! (is-some (map-get? btc-price-oracles tx-sender)) ERR-NOT-AUTHORIZED)
+    ;; Comprehensive price validation
+    (asserts!
+      (and
+        (> price u0) ;; Non-zero price requirement
+        (<= price MAX-BTC-PRICE) ;; Prevent price manipulation attacks
+      )
+      ERR-INVALID-PARAMETERS
+    )
+    ;; Timestamp boundary validation
+    (asserts! (<= timestamp MAX-TIMESTAMP) ERR-INVALID-PARAMETERS)
+    ;; Update price oracle data
+    (map-set last-btc-price {
+      timestamp: timestamp,
+      price: price,
+    }
+      price
+    )
+    (ok true)
+  )
+)
+
+;; VAULT CREATION & MANAGEMENT
+
+;; Create new collateralized vault
+(define-public (create-vault (collateral-amount uint))
+  (let (
+      (vault-id (+ (var-get vault-counter) u1))
+      (new-vault {
+        owner: tx-sender,
+        id: vault-id,
+      })
+    )
+    ;; Validate collateral input
+    (asserts! (> collateral-amount u0) ERR-INVALID-COLLATERAL)
+    (asserts! (< vault-id (+ (var-get vault-counter) u1000))
+      ERR-INVALID-PARAMETERS
+    )
+    ;; Increment global vault counter
+    (var-set vault-counter vault-id)
+    ;; Initialize vault with collateral
+    (map-set vaults new-vault {
+      collateral-amount: collateral-amount,
+      stablecoin-minted: u0,
+      created-at: stacks-block-height,
+    })
+    (ok vault-id)
+  )
+)
